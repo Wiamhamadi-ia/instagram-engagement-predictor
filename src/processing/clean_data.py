@@ -77,12 +77,18 @@ def main():
 
     df["type_post"] = df["media_type"].map(TYPE_POST)
     df["est_reel"] = df["media_product_type"].eq("REELS")
+
+    # Deux situations à ne pas confondre :
+    #   - like_count absent  -> le compte masque ses likes, la valeur est inconnue
+    #   - like_count == 0    -> le post a vraiment fait zéro like, donnée valide
+    # L'API omet la clé dans le premier cas et renvoie 0 dans le second, donc
+    # `likes` vaut NaN pour un compteur masqué et 0.0 pour un flop réel.
     df["likes_masques"] = df["likes"].isna()
 
-    # L'API masque les likes sur certains comptes, mais jamais les commentaires.
-    df["interactions"] = df["likes"].fillna(0) + df["commentaires"]
-    df["taux_engagement"] = (df["interactions"] / df["followers"] * 100).where(
-        ~df["likes_masques"])
+    # Cible du projet. NaN se propage sur les likes masqués : on ne fabrique pas
+    # un total à partir des seuls commentaires. Un flop réel garde sa vraie valeur,
+    # qui peut être supérieure à zéro s'il a récolté des commentaires.
+    df["interactions"] = df["likes"] + df["commentaires"]
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df["date"] = df["timestamp"].dt.date
@@ -113,9 +119,9 @@ def main():
         "id", "compte", "theme", "permalink", "timestamp", "date", "annee", "heure",
         "jour_semaine", "nom_jour", "type_post", "est_reel", "legende",
         "longueur_legende", "nb_mots_legende", "nb_hashtags", "nb_mentions",
-        "nb_emojis", "a_emoji", "a_legende", "likes", "commentaires", "interactions",
+        "nb_emojis", "a_emoji", "a_legende", "likes", "commentaires",
         "likes_masques", "followers", "followers_annonces", "abonnements",
-        "posts_publies_total", "taux_engagement", "groupe_split",
+        "posts_publies_total", "interactions", "groupe_split",
         "utilisable_entrainement",
     ]
     df = df[colonnes].sort_values(["compte", "timestamp"]).reset_index(drop=True)
@@ -125,7 +131,8 @@ def main():
 
     print(f"{len(df)} posts -> {OUT}")
     print(f"  utilisables pour l'entrainement : {df['utilisable_entrainement'].sum()}")
-    print(f"  likes masques                   : {df['likes_masques'].sum()}")
+    print(f"  likes masques (cible inconnue)  : {df['likes_masques'].sum()}")
+    print(f"  vrais zero like (flops gardes)  : {(df['likes'] == 0).sum()}")
     print(df.groupby("groupe_split").agg(
         comptes=("compte", "nunique"), posts=("id", "count"),
         utilisables=("utilisable_entrainement", "sum")).to_string())
