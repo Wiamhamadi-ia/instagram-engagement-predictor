@@ -1,0 +1,9 @@
+.env
+.env.example
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+data/raw/media/
+data/raw/*.jsonl
+data/raw/media_index.csv
