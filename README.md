@@ -61,15 +61,40 @@ jupyter lab notebooks/01_exploration.ipynb
 ```
 
 `clean_data.py` fusionne posts et profils, dérive les variables (`type_post`,
-`likes_masques`, `taux_engagement`, horodatage, comptages textuels) et répartit les
-comptes en train / validation. Le jeu nettoyé n'est pas versionné : il contient le
-contenu de comptes tiers et se régénère à partir des données brutes.
+`likes_masques`, `interactions`, horodatage, comptages textuels) et répartit les comptes
+en train / validation. Le jeu nettoyé n'est pas versionné : il contient le contenu de
+comptes tiers et se régénère à partir des données brutes.
 
-**Le découpage train / validation se fait par compte, jamais par post.** Deux posts
-d'un même compte partagent son audience et son style : les répartir entre les deux
-groupes ferait fuiter de l'information et gonflerait artificiellement le score.
+### La cible : `interactions`, et non un taux d'engagement
 
-### Résultat
+`interactions = likes + commentaires`
+
+Le réflexe habituel serait le *taux d'engagement* (interactions ÷ abonnés). Il a été
+écarté volontairement, parce que **le projet vise les petits comptes**. À cette échelle,
+le taux devient instable : avec 48 abonnés, un seul like de plus déplace le taux de
+2 points, contre 0,02 point pour un compte de 5 000. Diviser par un dénominateur
+minuscule fabrique du bruit.
+
+`followers` reste dans le jeu de données comme **variable explicative à part entière**,
+jamais comme dénominateur. C'est au modèle d'apprendre son effet plutôt qu'à nous de
+l'imposer par une division.
+
+### Deux situations à ne pas confondre
+
+| Cas | Ce que renvoie l'API | Décision | Volume |
+|---|---|---|---|
+| Le compte masque ses likes | clé `like_count` absente | écarté — cible inconnue | 567 |
+| Le post a vraiment fait zéro | `like_count = 0` | conservé — un flop est un signal | 24 |
+
+Confondre les deux reviendrait à fabriquer un total à partir des seuls commentaires pour
+les comptes qui masquent leurs likes. Un post à zéro like peut d'ailleurs avoir des
+commentaires, auquel cas ses `interactions` ne sont pas nulles.
+
+### Découpage
+
+**Le partage train / validation se fait par compte, jamais par post.** Deux posts d'un
+même compte partagent son audience et son style : les répartir entre les deux groupes
+ferait fuiter de l'information et gonflerait artificiellement le score.
 
 | | |
 |---|---|
@@ -77,25 +102,41 @@ groupes ferait fuiter de l'information et gonflerait artificiellement le score.
 | Train | 2 651 posts / 21 comptes |
 | Validation | 936 posts / 7 comptes (26 %) |
 | Cas d'usage | 19 posts / mon compte, jamais en entraînement |
+| Cible médiane | 93 interactions |
 
-| Effet sur l'engagement | Ampleur |
-|---|---|
-| Heure de publication | **Forte** — facteur 4,5 entre creux et pic |
-| Taille du compte | **Forte** — rho = −0,39, sens inverse |
-| Thème du compte | Modérée — rapport 3 entre extrêmes |
-| Type de post | Modérée — image > carrousel > vidéo en médiane |
-| Nombre de hashtags | Faible — 1 à 5 valent +9 %, au-delà l'effet s'annule |
-| Longueur de légende | Très faible — environ 1 % de la variation |
-| Présence d'emojis | Aucune — p = 0,25 |
-| Jour de la semaine | Aucune — p = 0,40 |
+### Une précaution de méthode : comparer chaque post à son compte
 
-Trois observations structurantes pour la suite :
+Avec `interactions` comme cible, un gros compte produit mécaniquement plus de réactions
+qu'un petit. Comparer directement des posts de comptes différents reviendrait donc à
+mesurer la taille des comptes. Les analyses utilisent donc une mesure relative :
 
-1. **La distribution est log-normale** : médiane 3,3 % mais maximum 11 077 %. Quelques
-   reels viraux dépassent 100 % d'engagement en touchant bien au-delà des abonnés.
-   La cible sera modélisée en logarithme.
-2. **La vidéo est un billet de loterie** : médiane la plus basse des trois formats
-   (2,9 % contre 4,3 % pour l'image), mais moyenne quatre fois supérieure.
+`interactions_relatives = interactions ÷ médiane des interactions du compte`
+
+Limite stricte : cette mesure vaut 1,0 pour tout groupe défini **au niveau du compte**
+(thème, abonnés), puisque chaque compte est centré sur lui-même. Elle ne sert qu'aux
+variables du **post**. Elle n'est pas enregistrée dans le jeu de données : calculée à
+partir de la cible, elle constituerait une fuite si elle servait de variable d'entrée.
+
+### Résultats
+
+| Effet | Ampleur | Niveau |
+|---|---|---|
+| Taille du compte | rho = +0,37, plus lâche qu'attendu | compte |
+| Thème du compte | rapport 2, confondu avec la taille | compte |
+| Heure de publication | facteur 1,7, pic à 9 h UTC (+25 %) | post |
+| Format du post | carrousel +5 %, image −6 % | post |
+| Nombre de hashtags | 1 à 5 valent +9 %, au-delà l'effet s'annule | post |
+| Présence d'emojis | +1 %, négligeable malgré p = 0,003 | post |
+| Longueur de légende | rho = +0,08, sous 1 % de variation | post |
+| Jour de la semaine | aucun (p = 0,86) | post |
+
+Trois observations structurantes :
+
+1. **La distribution est log-normale.** Médiane 93 interactions, moyenne 1 168, maximum
+   528 383. La cible sera modélisée en `log(1 + interactions)`, le `+1` conservant les
+   24 posts à zéro.
+2. **La vidéo est un billet de loterie.** Médiane la plus basse des trois formats
+   (77 contre 122 pour l'image), mais moyenne vingt fois supérieure à sa propre médiane.
 3. **Les métadonnées textuelles simples n'expliquent presque rien.** L'essentiel de la
    variation reste inexpliqué — c'est ce que l'image et le sens de la légende devront
    capter en phase 3.
@@ -104,12 +145,48 @@ Le détail figure dans [`notebooks/01_exploration.ipynb`](notebooks/01_explorati
 (angle Data Scientist) et [`reports/exploration_summary.html`](reports/exploration_summary.html)
 (angle Analyst, lecteur non technique).
 
+### Ce que le changement de cible a modifié
+
+L'exploration a d'abord été menée sur le taux d'engagement, avant de basculer sur
+`interactions`. Trois conclusions ont changé au passage, et elles méritent d'être
+consignées : ce sont elles qui justifient le choix de cible.
+
+**1. L'effet de l'heure était surestimé d'un facteur 2,6.**
+Première version : « publier à 15 h plutôt qu'à 21 h multiplie l'engagement par 4,5 ».
+Après correction : **facteur 1,7, avec un pic à 9 h UTC**. L'écart initial venait d'un
+taux calculé toutes publications confondues. Les créneaux horaires ne sont pas occupés
+par les mêmes comptes, si bien que la mesure mélangeait l'effet de l'heure et la taille
+des comptes qui publient à ces heures-là. Une fois chaque post comparé au sien, l'effet
+retombe à 1,7.
+
+**2. Le classement des formats s'inverse — un cas de paradoxe de Simpson.**
+En valeurs brutes, l'image arrive en tête (122 interactions contre 77 pour la vidéo).
+Une fois chaque post comparé à son propre compte, l'ordre change : **le carrousel passe
+devant (+5 %) et l'image tombe dernière (−6 %)**. La première lecture reflétait surtout
+le fait que les images proviennent de comptes plus actifs en interactions.
+
+**3. Le lien entre taille de compte et résultat change de signe, et de lecture.**
+Avec un taux, la corrélation était **négative** (rho = −0,39) : les petits comptes
+engageaient proportionnellement plus. Avec `interactions`, elle devient **positive mais
+lâche** (rho = +0,37, à peine hors du seuil de significativité sur 28 comptes). Les deux
+résultats sont vrais et décrivent deux choses différentes. Le second est le plus utile
+ici : un compte plus suivi récolte davantage, mais bien moins mécaniquement qu'on ne
+l'imaginerait, **ce qui laisse une vraie marge au contenu** — précisément ce que le
+projet cherche à exploiter pour les petits comptes.
+
+Un effet secondaire, moins spectaculaire mais réel : l'analyse des tendances temporelles
+devient honnête. Avec le taux, le dénominateur était le nombre d'abonnés *actuel*, si
+bien que les vieux posts d'un compte ayant beaucoup grandi paraissaient artificiellement
+faibles, créant une fausse progression. En interactions brutes, une hausse traduit une
+vraie hausse des réactions.
+
 ### Biais connus de l'analyse
-- **Abonnés figés** : l'API ne donne le nombre d'abonnés qu'à la date de collecte, alors
-  que les posts couvrent 2013-2026. Les publications anciennes des comptes ayant beaucoup
-  grandi sont mécaniquement pénalisées, ce qui gonfle les tendances à la hausse.
 - **Heures en UTC**, pas dans le fuseau de chaque audience.
-- **Associations, pas causalité** : rien ici ne prouve que publier à 15 h *provoque* un
-  meilleur engagement.
-- **Thèmes et taille de compte confondus** : les thèmes les mieux classés rassemblent
-  aussi le plus de petits comptes, qui engagent davantage.
+- **Associations, pas causalité** : rien ici ne prouve que publier à 9 h *provoque* plus
+  de réactions.
+- **Thèmes et taille de compte confondus** : les thèmes les mieux classés ne rassemblent
+  pas des comptes de taille comparable.
+- **Portée limitée** : l'échantillon couvre 255 à 11 209 abonnés dans des univers
+  créatifs. Mon compte, avec 48 abonnés, se situe **sous la plage d'entraînement** : les
+  prédictions le concernant resteront fragiles tant que le jeu ne comptera pas davantage
+  de très petits comptes.
