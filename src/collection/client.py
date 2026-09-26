@@ -59,6 +59,10 @@ class InstagramClient:
                 break
         return profile, posts[:max_posts]
 
+    def own_profile(self):
+        fields = "username,name,biography,followers_count,follows_count,media_count"
+        return self._get(f"{self.base}/{self.user_id}", {"fields": fields})
+
     def own_media(self, max_posts=500, page_size=50):
         """Posts de ton propre compte (endpoint /media, plus de champs dispo)."""
         posts, url = [], f"{self.base}/{self.user_id}/media"

@@ -46,6 +46,7 @@ def main():
     if args.own:
         posts = client.own_media(args.max_posts)
         append(OUT, [{**p, "account": "OWN", "theme": "melange", "collected_at": now} for p in posts])
+        append(PROFILES, [{**client.own_profile(), "theme": "melange", "collected_at": now}])
         print(f"Compte perso : {len(posts)} posts")
         return
 
