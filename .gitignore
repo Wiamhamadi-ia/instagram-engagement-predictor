@@ -7,3 +7,5 @@ __pycache__/
 data/raw/media/
 data/raw/*.jsonl
 data/raw/media_index.csv
+# Contenu de comptes tiers : regenerable via src/processing/clean_data.py
+data/processed/
