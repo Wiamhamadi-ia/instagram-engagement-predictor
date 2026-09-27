@@ -5,8 +5,8 @@ Prédire l'engagement d'un post Instagram avant publication (image + légende + 
 ## Phases
 1. **Collecte** : API Instagram Graph (Business Discovery), 28 comptes publics + mon compte
 2. **Exploration & nettoyage** : dataset propre, notebook d'analyse, rapport visuel
-3. Feature engineering (CV, NLP, temporel) — *en cours*
-4. Modélisation (baseline puis XGBoost/LightGBM)
+3. **Feature engineering** : embeddings image (CLIP) et texte (multilingue), temporel
+4. Modélisation (baseline puis XGBoost/LightGBM) — *en cours*
 5. App Streamlit
 6. Storytelling (lecture Analyst / Data Scientist)
 
@@ -190,3 +190,94 @@ vraie hausse des réactions.
   créatifs. Mon compte, avec 48 abonnés, se situe **sous la plage d'entraînement** : les
   prédictions le concernant resteront fragiles tant que le jeu ne comptera pas davantage
   de très petits comptes.
+
+## Phase 3 : feature engineering
+
+```
+python -m src.features.build_features            # réutilise le cache d'embeddings
+python -m src.features.build_features --recalc   # recalcule tout (~15 min)
+```
+
+Produit `data/processed/features.csv` : **4 173 lignes × 917 colonnes**, une ligne par
+post, jointure sur `id`.
+
+| Bloc | Colonnes | Contenu |
+|---|---|---|
+| Identifiant et cible | 4 | `id`, `log_interactions`, `groupe_split`, `utilisable_entrainement` |
+| Temporel | 3 | `heure_sin`, `heure_cos`, `jours_depuis_dernier_post` |
+| Texte | 2 | `hashtags_tranche` (0 à 4), `caption_vide` |
+| Compte et format | 9 | `followers`, `type_*` (3), `theme_*` (5) |
+| Standardisé | 2 | `followers_z`, `jours_depuis_dernier_post_z` |
+| Image | 1 | `image_manquante` |
+| Embeddings NLP | 384 | `nlp_000` … `nlp_383` |
+| Embeddings CLIP | 512 | `cv_000` … `cv_511` |
+
+La cible est `log_interactions = log(1 + interactions)`, renseignée uniquement pour les
+3 587 posts entraînables. Le `+1` conserve les 24 posts à zéro interaction.
+
+### Choix guidés par la phase 2
+
+Le feature engineering applique directement ce que l'exploration a mesuré, plutôt que
+d'empiler des variables par réflexe :
+
+- **Heure encodée en sinus/cosinus**, jamais en valeur brute 0-23 : sans cela, 23 h et
+  0 h seraient les deux points les plus éloignés alors qu'ils se suivent.
+- **Jour de la semaine absent** : aucun effet mesuré en phase 2 (p = 0,86).
+- **Hashtags en tranches ordinales** (0, 1-5, 6-10, 11-20, 21+) : l'effet est en cloche,
+  une variable linéaire le manquerait entièrement.
+- **Ni longueur de légende, ni nombre de mots, ni emojis** : testés et non pertinents,
+  tous sous 1 % de variation expliquée.
+- **`type_post` conservé en plus des embeddings image** : CLIP voit une miniature de
+  vidéo comme une image fixe et ne peut pas deviner le format.
+
+### Le modèle de texte a dû être changé
+
+La consigne initiale suggérait `all-MiniLM-L6-v2`. Un test préalable l'a écarté :
+**28,7 % des légendes exploitables sont en écriture non latine**, dont 996 en arabe, et
+le thème *ecriture* est arabe à 97 %.
+
+Sur quatre phrases arabes — deux sur l'amour, deux sur la mer — le pouvoir de séparation
+mesuré, écart entre similarité intra-sujet et inter-sujet, donne :
+
+| Modèle | Pouvoir de séparation |
+|---|---|
+| `all-MiniLM-L6-v2` (anglophone) | **−0,04** — juge « amour » et « mer » plus proches que deux phrases synonymes |
+| `paraphrase-multilingual-MiniLM-L12-v2` | **+0,60** |
+
+Le modèle anglophone aurait produit du bruit pur pour près d'un tiers du jeu de données,
+en éliminant silencieusement tout un thème. La variante multilingue sort la même
+dimension (384) pour un coût comparable.
+
+Vérification après coup sur le jeu réel : les légendes arabes du thème *ecriture* ont une
+similarité interne de 0,528, contre 0,341 face aux légendes latines du thème *nature*.
+Côté image, chaque thème a une cohérence interne supérieure à l'externe (écart de +0,05
+pour *nature* à +0,18 pour *ecriture*).
+
+### Aucune fuite de données
+
+- **Les embeddings sont calculés post par post**, indépendamment les uns des autres :
+  ni moyenne, ni ajustement global, donc aucune circulation d'information entre posts.
+- **La normalisation L2 des vecteurs est faite ligne par ligne**, chaque vecteur
+  indépendamment.
+- **La standardisation de `followers` et `jours_depuis_dernier_post` utilise uniquement
+  les 2 651 posts de train.** Les paramètres sont enregistrés dans `scaler_params.json`
+  et appliqués tels quels à la validation. Vérification : la moyenne de `followers_z`
+  vaut exactement 0 sur le train et −0,53 sur la validation, ce qui prouve que les
+  statistiques ne viennent pas du jeu complet.
+- **La mesure relative au compte de la phase 2 n'est volontairement pas une variable** :
+  calculée à partir de la cible, elle constituerait une fuite directe.
+
+### Mise en cache
+
+Les embeddings coûtent environ 15 minutes de calcul sur processeur. Ils sont conservés
+dans `embeddings_nlp.npy` et `embeddings_cv.npy`, **indexés par identifiant de post**
+plutôt que par position. Une relance complète prend alors 4 secondes, et ajouter des
+comptes plus tard ne recalculera que les posts nouveaux.
+
+### Limites du jeu de variables
+- **Les vidéos ne sont vues que par leur miniature.** 56 % du jeu est constitué de
+  reels, dont le mouvement, le rythme et le son échappent totalement au modèle.
+- **Les carrousels ne sont vus que par leur première image**, alors qu'ils comptent
+  jusqu'à dix visuels.
+- **CLIP n'a pas été réentraîné** sur ce domaine : ses vecteurs décrivent le contenu
+  visuel générique, pas ce qui fait le style d'un compte.
