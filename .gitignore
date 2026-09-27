@@ -9,3 +9,6 @@ data/raw/*.jsonl
 data/raw/media_index.csv
 # Contenu de comptes tiers : regenerable via src/processing/clean_data.py
 data/processed/
+# Modele entraine : regenerable via src/models/train_models.py
+# Ancre a la racine, sinon le motif exclurait aussi src/models/
+/models/

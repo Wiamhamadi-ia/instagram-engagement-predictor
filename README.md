@@ -6,8 +6,8 @@ Prédire l'engagement d'un post Instagram avant publication (image + légende + 
 1. **Collecte** : API Instagram Graph (Business Discovery), 28 comptes publics + mon compte
 2. **Exploration & nettoyage** : dataset propre, notebook d'analyse, rapport visuel
 3. **Feature engineering** : embeddings image (CLIP) et texte (multilingue), temporel
-4. Modélisation (baseline puis XGBoost/LightGBM) — *en cours*
-5. App Streamlit
+4. **Modélisation** : baselines, trois candidats, ablation, diagnostic
+5. App Streamlit — *en cours*
 6. Storytelling (lecture Analyst / Data Scientist)
 
 ## Phase 1 : collecte
@@ -281,3 +281,129 @@ comptes plus tard ne recalculera que les posts nouveaux.
   jusqu'à dix visuels.
 - **CLIP n'a pas été réentraîné** sur ce domaine : ses vecteurs décrivent le contenu
   visuel générique, pas ce qui fait le style d'un compte.
+
+## Phase 4 : modélisation
+
+```
+python -m src.models.train_models        # ~25 min, produit resultats_modeles.json
+jupyter lab notebooks/02_modelisation.ipynb
+```
+
+### Résultat principal : aucun modèle ne bat la baseline
+
+| Modèle | RMSE (log) | Facteur d'erreur |
+|---|---|---|
+| Baseline : médiane du train | 1,402 | ×3,13 |
+| **Baseline : régression sur `followers` seul** | **1,362** | **×3,03** |
+| RandomForest (5 graines) | 1,424 ± 0,005 | ×3,25 |
+| XGBoost (5 graines) | 1,419 ± 0,010 | ×3,20 |
+| LightGBM (5 graines) | 1,404 ± 0,015 | ×3,13 |
+| LightGBM réglé, 911 variables | 1,368 | ×3,03 |
+| LightGBM, tabulaire + texte seulement | 1,365 | ×3,02 |
+| LightGBM restreint aux comptes < 2 000 abonnés | 1,472 | ×3,33 |
+
+**Trois algorithmes, 911 variables, un réglage par recherche aléatoire : le meilleur
+score (1,365) reste au niveau d'une droite ajustée sur le seul nombre d'abonnés
+(1,362).** C'est le résultat de la phase, et il est rapporté tel quel.
+
+L'erreur typique correspond à un **facteur 3** : un post qui obtient 100 réactions est
+prédit entre 33 et 300. Le nuage predit/observé du notebook montre le symptôme —
+les prédictions restent comprises entre 4 et 5 en échelle log alors que la réalité
+s'étale de 0 à 12. Le modèle prédit presque toujours la même chose.
+
+### Protocole
+
+- **Découpage par compte**, jamais par post.
+- **Le réglage n'utilise jamais la validation** : recherche aléatoire de 18
+  combinaisons, évaluées par `GroupKFold` groupé par compte *à l'intérieur du train*.
+  Régler sur la validation puis y mesurer la performance donnerait un score optimiste.
+- **Cinq graines par modèle**, pour distinguer un vrai écart d'une fluctuation.
+- **Erreur détaillée par compte de validation** : aucun compte ne domine. Le maximum
+  est 19,1 % de l'erreur totale pour une répartition égale à 14,3 %, donc le score
+  agrégé n'est pas l'artefact d'un compte aberrant.
+
+### Ablation : d'où vient le signal
+
+| Bloc | Variables | RMSE |
+|---|---|---|
+| Tabulaire seul | 15 | 1,533 |
+| Tabulaire + image | 527 | 1,419 |
+| Tout | 911 | 1,368 |
+| Tabulaire + texte | 399 | **1,365** |
+
+Les 15 variables tabulaires seules font **pire que la médiane** (1,533 contre 1,402).
+Les embeddings de texte sont le seul apport net. Les embeddings d'image n'aident pas et
+dégradent légèrement le score quand on les ajoute au texte — cohérent avec le fait que
+56 % du jeu est constitué de reels dont on ne voit qu'une miniature figée.
+
+### Petits comptes : plus de données l'emporte
+
+Évalués sur le même sous-ensemble de validation (360 posts, comptes < 2 000 abonnés) :
+
+| Entraînement | Posts | Comptes | RMSE |
+|---|---|---|---|
+| Échantillon complet | 2 651 | 21 | **1,348** |
+| Comptes < 2 000 abonnés | 912 | 6 | 1,472 |
+
+Le modèle entraîné sur tout généralise mieux, y compris sur le terrain des petits
+comptes : la spécialisation ne compense pas la perte de volume. **Conclusion fragile
+cependant**, la validation ne comptant que 3 comptes sous ce seuil.
+
+### L'anomalie de l'heure, et sa résolution
+
+Le contrôle de cohérence avec la phase 2 a signalé une anomalie : `heure_sin` et
+`heure_cos` ont une importance quasi nulle (0,0003) alors que la phase 2 y mesurait un
+effet net, facteur 1,7 avec p < 0,001.
+
+La décomposition de la variance donne la réponse : **l'heure explique 0,58 % de la
+variance totale** à prédire, soit 1,0 % de la variance interne aux comptes. Les deux
+résultats sont exacts mais ne parlent pas de la même échelle :
+
+- La **phase 2** mesurait un décalage de médiane *à l'intérieur* de chaque compte. Sur
+  cette échelle relative, +25 % est visible et actionnable pour un créateur.
+- Le **modèle** prédit une valeur absolue, dont 44 % de la variance vient de l'écart
+  *entre* comptes. À cette échelle, un effet à 0,58 % est noyé.
+
+Ce n'est pas un bug mais une leçon : **un effet peut être statistiquement solide,
+pratiquement utile, et malgré tout négligeable pour un modèle de prédiction.**
+
+### Importance native contre importance par permutation
+
+L'importance native (gain) attribue 40 % aux images et 33 % au texte. L'importance par
+permutation, mesurée sur la validation, raconte l'inverse :
+
+| Bloc | Dégradation du RMSE quand on le mélange |
+|---|---|
+| image (embeddings) | +0,024 |
+| theme | +0,014 |
+| heure | +0,000 |
+| hashtags | −0,000 |
+| format | −0,004 |
+| texte (embeddings) | −0,012 |
+| followers | −0,012 |
+| jours depuis le dernier post | −0,012 |
+
+Une valeur **négative** signifie que mélanger le bloc *améliore* la prédiction : le
+modèle s'appuie dessus d'une façon qui ne se transpose pas à des comptes jamais vus.
+L'importance native ne mesure que l'usage fait des variables pendant l'entraînement ;
+avec 896 dimensions disponibles, un arbre trouve toujours où découper, même dans du
+bruit.
+
+### Pourquoi ça ne marche pas, et ce qu'il faut changer
+
+**Le problème est le nombre de comptes, pas le nombre de posts.** Le modèle dispose de
+2 651 exemples mais de seulement **21 comptes** d'entraînement, alors que 44 % de la
+variance à prédire se situe *entre* les comptes. Apprendre à généraliser d'un compte à
+l'autre sur 21 exemples n'est pas réaliste.
+
+Trois conséquences pour la suite :
+
+1. **Collecter plus de comptes prime sur tout le reste.** Doubler le nombre de posts par
+   compte n'aiderait pas ; passer de 21 à 60 comptes, si.
+2. **L'application de la phase 5 doit annoncer son incertitude** plutôt qu'afficher un
+   nombre unique. Une fourchette et un rang relatif sont honnêtes ; « ce post fera
+   240 réactions » ne l'est pas.
+3. **Une cible relative au compte serait plus réaliste.** Prédire « ce post fera mieux
+   ou moins bien que l'ordinaire de ce compte » élimine les 44 % de variance
+   inter-comptes que le modèle ne sait pas traiter, et correspond mieux à la question
+   que se pose un créateur.
