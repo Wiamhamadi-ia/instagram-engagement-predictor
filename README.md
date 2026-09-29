@@ -8,8 +8,8 @@ Prédire l'engagement d'un post Instagram avant publication (image + légende + 
 3. **Feature engineering** : embeddings image (CLIP) et texte (multilingue), temporel
 4. **Modélisation** : baselines, candidats, ablation, diagnostic
 4b. **Cible relative** : niveau habituel du compte, centrage + ACP, validation croisée groupée
-5. App Streamlit — *en cours*
-6. Storytelling (lecture Analyst / Data Scientist)
+5. **App Streamlit** : tendance et fiabilité affichée, jamais un chiffre
+6. Storytelling (lecture Analyst / Data Scientist) — *en cours*
 
 ## Phase 1 : collecte
 Créer un fichier `.env` (non versionné) à la racine :
@@ -506,3 +506,56 @@ Le problème n'est plus la formulation, il est dans les données :
   ordinaire » — accompagnée de sa fiabilité réelle, 53 % contre 50 % au hasard.
 - **Mettre en avant les enseignements descriptifs de la phase 2**, solides et
   actionnables, plutôt qu'une prédiction qui ne tient pas.
+
+## Phase 5 : application Streamlit
+
+```
+python -m src.models.export_app    # artefacts du modele (302 Ko, versionnes)
+streamlit run app.py
+```
+
+Trois pages : **Prédire un post**, **Explorer les résultats**, **Comprendre les limites**.
+
+### Le parti pris : ne pas afficher de chiffre
+
+Les phases 4 et 4b ont établi que le modèle ne prédit pas utilement un nombre de
+réactions. L'application en tire les conséquences plutôt que de les masquer :
+
+- **Aucun nombre de réactions prédit.** Le résultat est une tendance à trois niveaux —
+  au-dessus, dans la moyenne, en dessous — dont les seuils sont les tiers de la
+  distribution des prédictions hors échantillon.
+- **La fiabilité est affichée, pas enfouie** : une jauge et un encadré indiquent que
+  l'AUC vaut 0,524, soit 52 % de bonnes réponses contre 50 % au hasard.
+- **Deux facteurs explicatifs** issus de la phase 2 accompagnent chaque résultat :
+  position de l'heure choisie par rapport au pic de 9 h UTC, et nombre de hashtags par
+  rapport à la zone 1-5.
+- **Une page entière est consacrée aux limites**, accessible depuis la navigation et non
+  reléguée en note de bas de page.
+
+### Le pipeline est strictement causal
+
+Cohérent avec la correction de la phase 4b : aucune information postérieure n'entre dans
+une prédiction.
+
+- Les artefacts (ACP, Ridge) sont entraînés sur des embeddings **centrés causalement**,
+  c'est-à-dire sur la moyenne des posts précédents uniquement.
+- Le champ « niveau habituel » se calcule sur les publications passées saisies par
+  l'utilisateur.
+- **Une approximation reste nécessaire, et elle est mesurée.** À l'entraînement, chaque
+  embedding était comparé au style habituel de son compte. Un nouvel utilisateur n'ayant
+  pas cet historique, l'app compare au style moyen du jeu d'entraînement. Coût mesuré
+  par validation croisée : l'AUC passe de 0,530 à **0,524**. C'est ce second chiffre que
+  l'application affiche.
+
+### Mise en cache
+
+CLIP et le modèle de texte multilingue sont chargés une seule fois via
+`@st.cache_resource`, de même que les artefacts. Sans cela, chaque prédiction
+rechargerait environ 700 Mo de poids.
+
+### Déploiement
+
+`models/app/` est versionné par exception (302 Ko) pour que l'application démarre depuis
+un clone. Les modèles pré-entraînés se téléchargent au premier lancement depuis
+Hugging Face. Les données brutes ne sont pas nécessaires : les agrégats de la phase 2
+affichés dans la page d'exploration sont embarqués dans `reference.json`.

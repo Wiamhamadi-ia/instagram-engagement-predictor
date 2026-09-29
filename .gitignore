@@ -9,6 +9,11 @@ data/raw/*.jsonl
 data/raw/media_index.csv
 # Contenu de comptes tiers : regenerable via src/processing/clean_data.py
 data/processed/
-# Modele entraine : regenerable via src/models/train_models.py
-# Ancre a la racine, sinon le motif exclurait aussi src/models/
-/models/
+# Modeles entraines : regenerables via src/models/
+# On exclut le CONTENU et non le dossier, sinon git n'y descend pas et
+# l'exception ci-dessous serait ignoree. Ancre a la racine pour ne pas
+# exclure src/models/.
+/models/*
+# Exception : les artefacts de l'app (302 Ko) sont versionnes, pour qu'elle
+# soit deployable depuis un clone
+!/models/app/
