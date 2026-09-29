@@ -6,7 +6,8 @@ Prédire l'engagement d'un post Instagram avant publication (image + légende + 
 1. **Collecte** : API Instagram Graph (Business Discovery), 28 comptes publics + mon compte
 2. **Exploration & nettoyage** : dataset propre, notebook d'analyse, rapport visuel
 3. **Feature engineering** : embeddings image (CLIP) et texte (multilingue), temporel
-4. **Modélisation** : baselines, trois candidats, ablation, diagnostic
+4. **Modélisation** : baselines, candidats, ablation, diagnostic
+4b. **Cible relative** : niveau habituel du compte, centrage + ACP, validation croisée groupée
 5. App Streamlit — *en cours*
 6. Storytelling (lecture Analyst / Data Scientist)
 
@@ -407,3 +408,101 @@ Trois conséquences pour la suite :
    ou moins bien que l'ordinaire de ce compte » élimine les 44 % de variance
    inter-comptes que le modèle ne sait pas traiter, et correspond mieux à la question
    que se pose un créateur.
+
+## Phase 4b : cible relative au compte
+
+```
+python -m src.models.train_relatif      # ~10 min, produit resultats_relatif.json
+jupyter lab notebooks/03_modelisation_relative.ipynb
+```
+
+La phase 4 avait identifié son propre point de blocage : 44 % de la variance à prédire
+se situe **entre** les comptes, et 21 comptes d'entraînement ne suffisent pas à
+apprendre à généraliser de l'un à l'autre. Cette phase change donc la question.
+
+| | Phase 4 | Phase 4b |
+|---|---|---|
+| Question | Combien de réactions ? | Mieux ou moins bien que l'ordinaire du compte ? |
+| Cible | `log(1 + interactions)` | `log(1 + interactions) − log(1 + niveau habituel)` |
+| Variables de compte | `followers`, `theme` inclus | retirés : constants par compte |
+| Embeddings | 896 dimensions brutes | centrés par compte puis réduits à 40 par bloc |
+| Évaluation | un découpage fixe, 7 comptes | validation croisée groupée, 5 folds sur 28 comptes |
+
+**Niveau habituel** = médiane des interactions des **20 posts précédents** du même
+compte, minimum 10. Le décalage d'un rang est ce qui rend la cible utilisable en
+prédiction : au moment de publier, seul le passé est connu. 280 posts (7,8 %) sont
+écartés faute d'historique ; les 28 comptes restent tous représentés.
+
+### Centrer avant de réduire : l'ordre est vérifiable
+
+Appliquer une ACP directement sur les embeddings bruts capturerait d'abord
+« de quel compte vient ce post », justement l'information dont la cible relative nous
+débarrasse. Mesure de la part de variance de chaque composante expliquée par
+l'identité du compte :
+
+| | PC1 | PC2 | PC3 | PC4 | PC5 |
+|---|---|---|---|---|---|
+| Sans centrage | 73 % | 64 % | 57 % | 50 % | 30 % |
+| Avec centrage par compte | 0 % | 0 % | 0 % | 0 % | 0 % |
+
+L'ACP est réajustée **dans chaque fold**, sur les comptes d'entraînement seulement.
+
+### Résultats : un signal faible mais réel
+
+Centrage causal, le seul valable pour une prédiction avant publication :
+
+| Modèle | AUC | Spearman intra-compte | RMSE |
+|---|---|---|---|
+| Ridge | 0,530 ± 0,011 | +0,054 ± 0,048 | 1,135 |
+| XGBoost | 0,527 ± 0,013 | +0,042 ± 0,053 | 1,143 |
+| RandomForest | 0,525 ± 0,015 | +0,032 ± 0,057 | 1,119 |
+| LightGBM | 0,522 ± 0,019 | +0,039 ± 0,042 | 1,148 |
+| *Baseline : prédire 0* | *0,500* | — | ***1,113*** |
+
+**Le changement de cible a fonctionné comme diagnostic.** La phase 4 ne trouvait aucun
+signal de contenu. Ici, les quatre modèles dépassent le hasard dans les cinq folds,
+avec les deux méthodes de centrage : le contenu d'un post porte bien une information
+sur sa performance relative.
+
+**Mais le signal reste inexploitable.** Une AUC de 0,53 signifie 53 % de bonnes
+réponses contre 50 % au hasard. Le Spearman change de signe selon les folds — sa
+dispersion vaut autant que sa moyenne. Et **aucun modèle ne bat le pari trivial sur le
+RMSE** : pour estimer un nombre, « comme d'habitude » reste la meilleure réponse.
+
+### Un tiers du signal venait d'un regard vers le futur
+
+Le centrage des embeddings pose une question que la consigne laissait ouverte : la
+moyenne du compte doit-elle porter sur **tous** ses posts, ou seulement les précédents ?
+Le pipeline calcule les deux.
+
+| Modèle | Centrage global | Centrage causal | Écart |
+|---|---|---|---|
+| LightGBM | 0,536 | 0,522 | +0,014 |
+| Ridge | 0,541 | 0,530 | +0,011 |
+| RandomForest | 0,536 | 0,525 | +0,011 |
+| XGBoost | 0,531 | 0,527 | +0,004 |
+
+Ce n'est pas une fuite de cible : la moyenne des embeddings ne contient aucune
+réaction. C'est plus subtil — connaître le style *futur* d'un compte aide à situer un
+post dans sa trajectoire. Réel, mais indisponible en production. **Environ un tiers de
+l'écart au hasard disparaît** une fois ce regard supprimé.
+
+### Ce qui bloque désormais
+
+Le problème n'est plus la formulation, il est dans les données :
+
+1. **56 % du jeu est constitué de reels vus par une seule miniature figée.** Mouvement,
+   rythme, son et montage — l'essentiel de ce qui fait marcher un reel — sont absents.
+2. **28 comptes restent peu** pour apprendre ce qui distingue un bon post d'un mauvais
+   indépendamment du compte.
+3. **La part d'aléatoire est énorme** : l'écart-type de la cible vaut 1,12, soit un
+   facteur 3 d'un post à l'autre au sein d'un même compte. Une bonne part tient à la
+   diffusion algorithmique, que rien dans ces variables ne peut capter.
+
+### Conséquences pour la phase 5
+
+- **Ne pas afficher un nombre de réactions** : aucun résultat ne le justifie.
+- **Afficher au mieux une tendance** — « ce post semble légèrement au-dessus de votre
+  ordinaire » — accompagnée de sa fiabilité réelle, 53 % contre 50 % au hasard.
+- **Mettre en avant les enseignements descriptifs de la phase 2**, solides et
+  actionnables, plutôt qu'une prédiction qui ne tient pas.
